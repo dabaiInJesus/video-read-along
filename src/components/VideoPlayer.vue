@@ -817,9 +817,12 @@ onMounted(() => {
       </div>
 
       <!-- AI 字幕生成进度条（控制栏下方） -->
-      <div id="ai-subtitle-progress" class="hidden bg-slate-800 px-0 py-1 border-t border-slate-700">
-        <div class="w-full bg-slate-700 h-1">
-          <div id="progress-bar-inline" class="bg-blue-500 h-1 transition-all duration-300" style="width: 0%"></div>
+      <div id="ai-subtitle-progress" class="hidden bg-slate-800 px-4 py-2 border-t border-slate-700">
+        <div class="flex items-center justify-between mb-1">
+          <span id="progress-text-inline" class="text-xs text-slate-300">正在准备...</span>
+        </div>
+        <div class="w-full bg-slate-700 h-1.5 rounded-full overflow-hidden">
+          <div id="progress-bar-inline" class="bg-blue-500 h-1.5 rounded-full transition-all duration-300" style="width: 0%"></div>
         </div>
       </div>
     </div>
