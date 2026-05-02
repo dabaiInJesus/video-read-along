@@ -1,0 +1,15 @@
+{
+  "name": "subtitle-server",
+  "version": "1.0.0",
+  "description": "AI 字幕生成服务",
+  "main": "english-subtitle-server.mjs",
+  "scripts": {
+    "start": "node english-subtitle-server.mjs"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "multer": "^1.4.5-lts.1",
+    "fluent-ffmpeg": "^2.1.2"
+  }
+}

@@ -1,0 +1,13 @@
+node_modules/
+dist/
+dist-electron/
+release/
+*.log
+
+# Temporary files
+server/uploads/
+server/output/
+.vscode/
+
+# Large model files (download separately)
+whisper.cpp/models/*.bin
