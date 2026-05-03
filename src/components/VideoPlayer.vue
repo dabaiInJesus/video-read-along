@@ -131,14 +131,33 @@ async function generateAiSubtitles() {
     return
   }
   
+  // 如果正在生成中，不重复触发
+  if (isGeneratingSubtitles.value) {
+    console.log('字幕正在生成中，跳过重复请求')
+    return
+  }
+  
   try {
+    isGeneratingSubtitles.value = true
     console.log('=== 开始自动生成 AI 字幕 ===')
     
-    // 检查后端服务是否可用
-    const healthCheck = await fetch('http://localhost:3001/health').catch(() => null)
+    // 检查后端服务是否可用（设置超时）
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 5000) // 5秒超时
+    
+    let healthCheck = null
+    try {
+      healthCheck = await fetch('http://localhost:3001/health', { 
+        signal: controller.signal 
+      }).catch(() => null)
+    } finally {
+      clearTimeout(timeoutId)
+    }
     
     if (!healthCheck || !healthCheck.ok) {
       console.warn('AI 字幕服务未启动，跳过自动生成')
+      isGeneratingSubtitles.value = false
+      canPlay.value = true // 即使没有字幕也允许播放
       return
     }
     
@@ -163,33 +182,59 @@ async function generateAiSubtitles() {
       
       if (progressText) {
         if (progress < 30) {
-          progressText.textContent = '正在提取音频...'
+          progressText.textContent = 'AI字幕提取-正在提取音频...'
         } else if (progress < 60) {
-          progressText.textContent = '正在识别语音...'
+          progressText.textContent = 'AI字幕提取-正在识别语音...'
         } else if (progress < 90) {
-          progressText.textContent = '正在生成字幕...'
+          progressText.textContent = 'AI字幕提取-正在生成字幕...'
         } else {
-          progressText.textContent = '即将完成...'
+          progressText.textContent = 'AI字幕提取-即将完成...'
         }
       }
     }, 500)
     
     try {
-      // 将视频文件转换为 Blob 并上传
-      const videoUrl = props.videoSrc
-      const response = await fetch(videoUrl)
-      const videoBlob = await response.blob()
+      // 直接使用原始文件路径，不需要上传文件
+      const videoPath = props.videoSrc
       
-      // 创建 FormData
-      const formData = new FormData()
-      const fileName = videoUrl.split('/').pop() || 'video.mp4'
-      formData.append('video', videoBlob, fileName)
+      console.log('=== 开始自动生成 AI 字幕 ===')
+      console.log('视频路径:', videoPath)
       
-      // 调用后端 API
+      // 检查文件大小（通过IPC获取）
+      const fileInfo = await window.electron.ipcRenderer.invoke('get-file-info', videoPath)
+      if (!fileInfo || !fileInfo.exists) {
+        console.warn('视频文件不存在')
+        isGeneratingSubtitles.value = false
+        canPlay.value = true
+        return
+      }
+      
+      // 检查文件大小，超过200MB则跳过自动生成
+      const maxSize = 200 * 1024 * 1024 // 200MB
+      if (fileInfo.size > maxSize) {
+        console.warn(`视频文件过大 (${(fileInfo.size / 1024 / 1024).toFixed(1)}MB)，跳过自动生成`)
+        isGeneratingSubtitles.value = false
+        canPlay.value = true // 允许播放但不生成字幕
+        return
+      }
+      
+      // 调用后端 API，传递文件路径而不是上传文件
+      const apiController = new AbortController()
+      const apiTimeoutId = setTimeout(() => apiController.abort(), 600000) // 10分钟超时
+      
       const apiResponse = await fetch('http://localhost:3001/api/generate-english-subtitles', {
         method: 'POST',
-        body: formData
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          videoPath: videoPath,
+          filePath: videoPath // 兼容旧接口
+        }),
+        signal: apiController.signal
       })
+      
+      clearTimeout(apiTimeoutId)
       
       const result = await apiResponse.json()
       
@@ -232,10 +277,15 @@ async function generateAiSubtitles() {
       }
       
       throw error
+    } finally {
+      // 确保生成标志被重置
+      isGeneratingSubtitles.value = false
     }
     
   } catch (error) {
     console.error('AI 字幕生成失败:', error)
+    isGeneratingSubtitles.value = false
+    canPlay.value = true // 即使失败也允许播放
     // 不弹窗，只在控制台显示错误
   }
 }
@@ -244,6 +294,7 @@ async function generateAiSubtitles() {
 const aiSubtitleContent = ref('') // AI 字幕原始内容
 const currentSubtitleText = ref('') // 当前显示的字幕文本
 const parsedSubtitles = ref<Array<{start: number, end: number, text: string}>>([]) // 解析后的字幕数据
+const isGeneratingSubtitles = ref(false) // 是否正在生成字幕，防止重复生成
 
 // 字幕样式设置
 const subtitleFontSize = ref(24) // 默认字体大小 24px
@@ -337,19 +388,22 @@ function updateCurrentAiSubtitle() {
 }
 
 // 视频时间更新处理
+let lastTimeUpdateLog = 0 // 用于限制日志输出频率
 function onTimeUpdate(event: Event) {
   const video = event.target as HTMLVideoElement
   currentTime.value = video.currentTime
   updateCurrentAiSubtitle()
   
-  // 调试信息：每5秒输出一次字幕状态
-  if (Math.floor(currentTime.value) % 5 === 0 && Math.floor(currentTime.value * 10) % 10 === 0) {
+  // 调试信息：每5秒输出一次字幕状态，避免过多日志
+  const now = Date.now()
+  if (now - lastTimeUpdateLog > 5000) {
     console.log('[TimeUpdate]', {
       currentTime: currentTime.value,
       subtitleEnabled: subtitleEnabled.value,
       parsedSubtitlesLength: parsedSubtitles.value.length,
       currentSubtitleText: currentSubtitleText.value.substring(0, 30)
     })
+    lastTimeUpdateLog = now
   }
 }
 
@@ -475,13 +529,21 @@ watch(() => props.videoSrc, async (newVal, oldVal) => {
   parsedSubtitles.value = []
   subtitleEnabled.value = true // 默认开启字幕
   canPlay.value = false // 上传新视频后，需要等待字幕生成
+  isGeneratingSubtitles.value = false // 重置生成标志
   
-  // 上传新视频后，自动生成 AI 字幕
-  if (newVal) {
-    console.log('检测到新视频，开始自动生成 AI 字幕...')
-    await generateAiSubtitles() // 等待生成完成
+  // 上传新视频后，自动生成 AI 字幕（延迟执行，避免阻塞UI）
+  if (newVal && !oldVal) {
+    // 只在首次加载视频时自动生成，给用户1秒时间看到界面
+    setTimeout(async () => {
+      console.log('检测到新视频，开始自动生成 AI 字幕...')
+      await generateAiSubtitles() // 等待生成完成
+    }, 1000)
+  } else if (newVal && oldVal && newVal !== oldVal) {
+    // 切换视频时也生成，但不延迟
+    console.log('切换到新视频，开始自动生成 AI 字幕...')
+    await generateAiSubtitles()
   } else {
-    console.log('视频源为空，不生成字幕')
+    console.log('视频源为空或无变化，不生成字幕')
   }
 })
 

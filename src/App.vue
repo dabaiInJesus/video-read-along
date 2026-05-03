@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import VideoPlayer from './components/VideoPlayer.vue'
 
 const videoSrc = ref('')
@@ -7,6 +7,9 @@ const subtitleSrc = ref('')
 
 // Detect platform - in Electron renderer, we can use navigator.userAgent
 const isWindows = navigator.userAgent.toLowerCase().includes('win')
+
+// 存储清理函数
+let cleanupFunctions: Array<() => void> = []
 
 onMounted(() => {
   console.log('=== App Mounted ===')
@@ -23,16 +26,30 @@ onMounted(() => {
     console.error('❌ window.electron.ipcRenderer is not defined!')
   }
   
+  // 监听字幕服务日志
+  const subtitleLogCleanup = window.electron.ipcRenderer.on('subtitle-service-log', (message: string) => {
+    console.log('[Subtitle Service]', message)
+  })
+  cleanupFunctions.push(subtitleLogCleanup)
+  
+  // 监听字幕服务错误
+  const subtitleErrorCleanup = window.electron.ipcRenderer.on('subtitle-service-error', (message: string) => {
+    console.error('[Subtitle Service Error]', message)
+  })
+  cleanupFunctions.push(subtitleErrorCleanup)
+  
   // Listen for file dialog errors
   console.log('Setting up file-dialog-error listener...')
-  window.electron.ipcRenderer.on('file-dialog-error', (errorMsg: string) => {
+  const errorCleanup = window.electron.ipcRenderer.on('file-dialog-error', (errorMsg: string) => {
     console.error('File dialog error:', errorMsg)
-    alert(`❌ 文件选择错误\n\n${errorMsg}`)
+    // 不使用 alert，避免触发循环弹窗
+    // 在控制台显示错误即可
   })
+  cleanupFunctions.push(errorCleanup)
   
   // Listen for file-selected event
   console.log('Setting up file-selected listener...')
-  window.electron.ipcRenderer.on('file-selected', (filePath: string) => {
+  const fileSelectedCleanup = window.electron.ipcRenderer.on('file-selected', (filePath: string) => {
     console.log('=== File Selected Event Received ===')
     console.log('File selected:', filePath)
     console.log('File path type:', typeof filePath)
@@ -41,7 +58,7 @@ onMounted(() => {
     // Verify we got a valid path
     if (!filePath || filePath.trim() === '') {
       console.error('Received empty file path')
-      alert('❌ 文件路径为空')
+      // 不使用 alert，直接返回
       return
     }
     
@@ -81,13 +98,23 @@ onMounted(() => {
       console.log('✅ Subtitle source set:', subtitleSrc.value)
     } else {
       console.log('Unsupported file type:', ext)
-      alert(`❌ 不支持的文件类型: ${ext}\n\n支持的视频格式: MP4, MKV, AVI, MOV, WebM\n支持的字幕格式: SRT, VTT`)
+      // 不使用 alert，只在控制台显示
+      console.error(`不支持的文件类型: ${ext}\n支持的视频格式: MP4, MKV, AVI, MOV, WebM\n支持的字幕格式: SRT, VTT`)
     }
     console.log('========================================\n')
   })
+  cleanupFunctions.push(fileSelectedCleanup)
   
   console.log('✅ All IPC listeners set up successfully')
   console.log('===========================\n')
+})
+
+onUnmounted(() => {
+  // 清理所有 IPC 监听器
+  console.log('Cleaning up IPC listeners...')
+  cleanupFunctions.forEach(cleanup => cleanup())
+  cleanupFunctions = []
+  console.log('✅ IPC listeners cleaned up')
 })
 
 function openFile() {

@@ -134,16 +134,32 @@ function getFileHash(filePath) {
   })
 }
 
-// 生成英文字幕接口
+// 生成英文字幕接口（支持上传文件和直接文件路径两种模式）
 app.post('/api/generate-english-subtitles', upload.single('video'), async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: '没有上传文件' })
-    }
-
-    logWithTime('Received video file: ' + req.file.filename)
+    let videoPath = null
+    let isUploadedFile = false
     
-    const videoPath = req.file.path
+    // 模式1: 通过文件上传（兼容旧接口）
+    if (req.file) {
+      videoPath = req.file.path
+      isUploadedFile = true
+      logWithTime('Received uploaded video file: ' + req.file.filename)
+    }
+    // 模式2: 直接使用文件路径（新接口，节省空间）
+    else if (req.body && (req.body.videoPath || req.body.filePath)) {
+      videoPath = req.body.videoPath || req.body.filePath
+      logWithTime('Using direct video path: ' + videoPath)
+      
+      // 验证文件是否存在
+      if (!fs.existsSync(videoPath)) {
+        return res.status(400).json({ error: '视频文件不存在: ' + videoPath })
+      }
+    }
+    else {
+      return res.status(400).json({ error: '没有提供视频文件或路径' })
+    }
+    
     // 使用时间戳作为文件名，避免中文和特殊字符问题
     const timestamp = Date.now()
     const audioPath = path.join(UPLOAD_DIR, `${timestamp}.wav`)
@@ -152,19 +168,25 @@ app.post('/api/generate-english-subtitles', upload.single('video'), async (req, 
     logWithTime('Video path: ' + videoPath)
     logWithTime('Audio path: ' + audioPath)
     logWithTime('Output base: ' + outputBase)
+    logWithTime('Is uploaded file: ' + isUploadedFile)
     
     // 检查是否已有相同文件的字幕缓存
     try {
       const fileHash = await getFileHash(videoPath)
       const cachedSrtPath = path.join(OUTPUT_DIR, `${fileHash}.srt`)
+      const cachedAudioPath = path.join(UPLOAD_DIR, `${fileHash}.wav`) // 缓存的音频文件
       
       if (fs.existsSync(cachedSrtPath)) {
         logWithTime('Found cached subtitle for this video (hash: ' + fileHash.substring(0, 8) + '...)')
         const cachedContent = fs.readFileSync(cachedSrtPath, 'utf-8')
         
-        // 清理上传的临时文件
-        fs.unlinkSync(videoPath)
-        logWithTime('Cleaned uploaded video file')
+        // 只有当文件是通过上传获得的临时文件时才删除
+        if (isUploadedFile) {
+          fs.unlinkSync(videoPath)
+          logWithTime('Cleaned uploaded video file')
+        } else {
+          logWithTime('Keeping original video file')
+        }
         
         return res.json({
           success: true,
@@ -178,34 +200,55 @@ app.post('/api/generate-english-subtitles', upload.single('video'), async (req, 
         })
       }
       
-      logWithTime('No cache found, generating new subtitle (hash: ' + fileHash.substring(0, 8) + '...)')
+      // 检查是否有缓存的音频文件（避免重复提取音频）
+      let audioToUse = null
+      if (fs.existsSync(cachedAudioPath)) {
+        logWithTime('Found cached audio file, reusing it (hash: ' + fileHash.substring(0, 8) + '...)')
+        audioToUse = cachedAudioPath
+      } else {
+        logWithTime('No cache found, generating new subtitle (hash: ' + fileHash.substring(0, 8) + '...)')
+        audioToUse = audioPath // 使用新生成的音频路径
+      }
       
       // 将 hash 附加到 outputBase 用于缓存
       req.fileHash = fileHash
+      req.audioToUse = audioToUse // 记录要使用的音频文件路径
     } catch (e) {
       logWithTime('Cache check failed: ' + e.message)
+      req.audioToUse = audioPath // 出错时使用新路径
     }
     
-    // Step 1: Extract audio
-    logWithTime('Step 1: Extracting audio...')
-    logWithTime('   FFmpeg path: ' + FFMPEG_PATH)
-    logWithTime('   Video exists: ' + fs.existsSync(videoPath))
+    // Step 1: Extract audio (only if not cached)
+    const audioPathToUse = req.audioToUse || audioPath
     
-    try {
-      // 添加超时处理（最多 5 分钟）
-      const { stdout, stderr } = await execAsync(
-        `"${FFMPEG_PATH}" -i "${videoPath}" -vn -acodec pcm_s16le -ar 16000 -ac 1 "${audioPath}"`,
-        { timeout: 300000 }
-      )
-      if (stderr) {
-        logWithTime('   FFmpeg stderr: ' + stderr.substring(0, 200))
+    if (req.audioToUse && fs.existsSync(req.audioToUse)) {
+      // 复用缓存的音频文件
+      logWithTime('Step 1: Using cached audio file...')
+      logWithTime('   Audio path: ' + audioPathToUse)
+      logWithTime('   Audio file exists: ' + fs.existsSync(audioPathToUse))
+      logWithTime('   Audio file size: ' + fs.statSync(audioPathToUse).size + ' bytes')
+    } else {
+      // 提取新的音频文件
+      logWithTime('Step 1: Extracting audio...')
+      logWithTime('   FFmpeg path: ' + FFMPEG_PATH)
+      logWithTime('   Video exists: ' + fs.existsSync(videoPath))
+      
+      try {
+        // 添加超时处理（最多 5 分钟）
+        const { stdout, stderr } = await execAsync(
+          `"${FFMPEG_PATH}" -i "${videoPath}" -vn -acodec pcm_s16le -ar 16000 -ac 1 "${audioPath}"`,
+          { timeout: 300000 }
+        )
+        if (stderr) {
+          logWithTime('   FFmpeg stderr: ' + stderr.substring(0, 200))
+        }
+        logWithTime('Audio extraction completed')
+        logWithTime('   Audio file exists: ' + fs.existsSync(audioPath))
+        logWithTime('   Audio file size: ' + (fs.existsSync(audioPath) ? fs.statSync(audioPath).size : 0) + ' bytes')
+      } catch (ffmpegError) {
+        errorWithTime('FFmpeg error: ' + ffmpegError.message)
+        throw new Error('Audio extraction failed: ' + ffmpegError.message)
       }
-      logWithTime('Audio extraction completed')
-      logWithTime('   Audio file exists: ' + fs.existsSync(audioPath))
-      logWithTime('   Audio file size: ' + (fs.existsSync(audioPath) ? fs.statSync(audioPath).size : 0) + ' bytes')
-    } catch (ffmpegError) {
-      errorWithTime('FFmpeg error: ' + ffmpegError.message)
-      throw new Error('Audio extraction failed: ' + ffmpegError.message)
     }
     
     // Step 2: Use Whisper for subtitle generation (English optimized)
@@ -267,7 +310,7 @@ app.post('/api/generate-english-subtitles', upload.single('video'), async (req, 
     // Simplified Whisper command for compatibility
     const whisperCmd = `"${whisperExe}" ` +
       `-m "${modelPath}" ` +
-      `-f "${audioPath}" ` +
+      `-f "${audioPathToUse}" ` +  // 使用缓存的音频或新提取的音频
       `--output-file "${outputBase}" ` +
       `--output-srt ` +
       `-l en ` +
@@ -308,18 +351,41 @@ app.post('/api/generate-english-subtitles', upload.single('video'), async (req, 
       const cachePath = path.join(OUTPUT_DIR, `${req.fileHash}.srt`)
       fs.copyFileSync(srtPath, cachePath)
       logWithTime('Subtitle cached with hash: ' + req.fileHash.substring(0, 8) + '...')
+      
+      // 如果音频是新提取的，也缓存它
+      if (!req.audioToUse && fs.existsSync(audioPath)) {
+        const cachedAudioPath = path.join(UPLOAD_DIR, `${req.fileHash}.wav`)
+        fs.copyFileSync(audioPath, cachedAudioPath)
+        logWithTime('Audio file cached with hash: ' + req.fileHash.substring(0, 8) + '...')
+      }
     }
     
-    // 清理临时文件（保留字幕缓存）
+    // 清理临时文件（保留字幕和音频缓存）
     try {
       const filesToClean = [
-        videoPath,           // 上传的视频文件
-        audioPath,           // 提取的音频文件
         srtPath,             // 生成的字幕文件（已缓存）
         outputBase + '.txt', // 可能的文本输出
         outputBase + '.vtt', // 可能的VTT输出
         outputBase + '.json' // 可能的JSON输出
       ]
+      
+      // 只有当文件是通过上传获得的临时文件时才删除视频文件
+      if (isUploadedFile) {
+        filesToClean.push(videoPath) // 上传的视频临时文件
+        logWithTime('Will clean uploaded video file')
+      } else {
+        logWithTime('Keeping original video file (not uploaded)')
+      }
+      
+      // 如果使用了新提取的音频，删除它（已缓存）
+      if (!req.audioToUse && fs.existsSync(audioPath)) {
+        filesToClean.push(audioPath)
+        logWithTime('Will clean newly extracted audio file (cached)')
+      } else if (req.audioToUse && req.audioToUse === audioPath) {
+        // 如果新生成的音频路径被复用，也删除
+        filesToClean.push(audioPath)
+        logWithTime('Will clean temporary audio file')
+      }
       
       let cleanedCount = 0
       filesToClean.forEach(file => {
@@ -329,7 +395,7 @@ app.post('/api/generate-english-subtitles', upload.single('video'), async (req, 
         }
       })
       
-      logWithTime(`Cleaned ${cleanedCount} temporary files (subtitle cached)`)
+      logWithTime(`Cleaned ${cleanedCount} temporary files (subtitle and audio cached, original video kept)`)
     } catch (e) {
       errorWithTime('Cleanup warning: ' + e.message)
     }

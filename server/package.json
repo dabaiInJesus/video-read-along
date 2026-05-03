@@ -2,6 +2,7 @@
   "name": "subtitle-server",
   "version": "1.0.0",
   "description": "AI 字幕生成服务",
+  "type": "module",
   "main": "english-subtitle-server.mjs",
   "scripts": {
     "start": "node english-subtitle-server.mjs"
