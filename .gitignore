@@ -8,6 +8,7 @@ release/
 server/uploads/
 server/output/
 .vscode/
+.idea/
 
 # Large model files (download separately)
-whisper.cpp/models/*.bin
+whisper.cpp/models/*.bin.idea/
