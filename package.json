@@ -78,6 +78,10 @@
       {
         "from": "ffmpeg",
         "to": "ffmpeg"
+      },
+      {
+        "from": "node-portable",
+        "to": "node-portable"
       }
     ],
     "win": {

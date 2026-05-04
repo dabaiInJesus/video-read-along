@@ -147,10 +147,15 @@ class SubtitleServiceManager {
 
       console.log('[SubtitleService] Starting server process...')
       
-      // 使用 'node' 命令而不是 process.execPath，避免触发 Electron 入口
-      const nodePath = 'node'
-      
-      console.log('[SubtitleService] Using node path:', nodePath)
+      // 优先使用内置的 Node.js，如果没有则使用系统 PATH 中的 node
+      let nodePath = 'node'
+      const builtInNode = join(resourcePath, 'node-portable', 'node.exe')
+      if (existsSync(builtInNode)) {
+        nodePath = builtInNode
+        console.log('[SubtitleService] Using built-in Node.js:', nodePath)
+      } else {
+        console.log('[SubtitleService] Built-in Node.js not found, using system node')
+      }
       
       this.serverProcess = spawn(nodePath, ['--experimental-specifier-resolution=node', serverScript], {
         cwd: join(resourcePath, 'server'),
